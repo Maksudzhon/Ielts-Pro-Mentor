@@ -1,0 +1,282 @@
+-- Create app_role enum for user roles
+CREATE TYPE public.app_role AS ENUM ('admin', 'moderator', 'user');
+
+-- Create profiles table
+CREATE TABLE public.profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL UNIQUE,
+  full_name TEXT,
+  level TEXT DEFAULT 'Bronze',
+  xp INTEGER DEFAULT 0,
+  overall_band_score DECIMAL(2,1) DEFAULT 0.0,
+  writing_band_score DECIMAL(2,1) DEFAULT 0.0,
+  speaking_band_score DECIMAL(2,1) DEFAULT 0.0,
+  avatar_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Create user_roles table
+CREATE TABLE public.user_roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  role app_role NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, role)
+);
+
+-- Create essays table
+CREATE TABLE public.essays (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  task_type TEXT NOT NULL CHECK (task_type IN ('task1', 'task2')),
+  topic TEXT NOT NULL,
+  content TEXT NOT NULL,
+  word_count INTEGER,
+  overall_score DECIMAL(2,1),
+  task_achievement DECIMAL(2,1),
+  coherence_cohesion DECIMAL(2,1),
+  lexical_resource DECIMAL(2,1),
+  grammar_accuracy DECIMAL(2,1),
+  feedback JSONB,
+  vocabulary_used INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Create speaking_sessions table
+CREATE TABLE public.speaking_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  part TEXT NOT NULL CHECK (part IN ('part1', 'part2', 'part3')),
+  topic TEXT NOT NULL,
+  transcript TEXT,
+  audio_url TEXT,
+  overall_score DECIMAL(2,1),
+  fluency_coherence DECIMAL(2,1),
+  lexical_resource DECIMAL(2,1),
+  pronunciation DECIMAL(2,1),
+  grammar_accuracy DECIMAL(2,1),
+  feedback JSONB,
+  duration_seconds INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Create vocabulary_challenges table
+CREATE TABLE public.vocabulary_challenges (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  word TEXT NOT NULL UNIQUE,
+  definition TEXT NOT NULL,
+  synonyms TEXT[],
+  example TEXT NOT NULL,
+  difficulty TEXT DEFAULT 'medium' CHECK (difficulty IN ('easy', 'medium', 'hard')),
+  category TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Create user_vocabulary table
+CREATE TABLE public.user_vocabulary (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  vocabulary_id UUID REFERENCES public.vocabulary_challenges(id) ON DELETE CASCADE NOT NULL,
+  learned BOOLEAN DEFAULT false,
+  used_count INTEGER DEFAULT 0,
+  last_used TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, vocabulary_id)
+);
+
+-- Create challenges table
+CREATE TABLE public.challenges (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  xp_reward INTEGER NOT NULL,
+  challenge_type TEXT NOT NULL CHECK (challenge_type IN ('daily', 'weekly', 'achievement')),
+  requirements JSONB,
+  active BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Create user_challenges table
+CREATE TABLE public.user_challenges (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  challenge_id UUID REFERENCES public.challenges(id) ON DELETE CASCADE NOT NULL,
+  completed BOOLEAN DEFAULT false,
+  progress INTEGER DEFAULT 0,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, challenge_id)
+);
+
+-- Enable RLS
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_roles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.essays ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.speaking_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vocabulary_challenges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_vocabulary ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.challenges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_challenges ENABLE ROW LEVEL SECURITY;
+
+-- Create has_role function
+CREATE OR REPLACE FUNCTION public.has_role(_user_id UUID, _role app_role)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.user_roles
+    WHERE user_id = _user_id AND role = _role
+  )
+$$;
+
+-- Profiles RLS policies
+CREATE POLICY "Users can view all profiles"
+  ON public.profiles FOR SELECT
+  TO authenticated
+  USING (true);
+
+CREATE POLICY "Users can update own profile"
+  ON public.profiles FOR UPDATE
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own profile"
+  ON public.profiles FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Essays RLS policies
+CREATE POLICY "Users can view own essays"
+  ON public.essays FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own essays"
+  ON public.essays FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Speaking sessions RLS policies
+CREATE POLICY "Users can view own sessions"
+  ON public.speaking_sessions FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own sessions"
+  ON public.speaking_sessions FOR INSERT
+  TO authenticated
+  WITH CHECK (auth.uid() = user_id);
+
+-- Vocabulary challenges RLS policies
+CREATE POLICY "Everyone can view vocabulary"
+  ON public.vocabulary_challenges FOR SELECT
+  TO authenticated
+  USING (true);
+
+CREATE POLICY "Admins can manage vocabulary"
+  ON public.vocabulary_challenges FOR ALL
+  TO authenticated
+  USING (public.has_role(auth.uid(), 'admin'));
+
+-- User vocabulary RLS policies
+CREATE POLICY "Users can view own vocabulary"
+  ON public.user_vocabulary FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage own vocabulary"
+  ON public.user_vocabulary FOR ALL
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Challenges RLS policies
+CREATE POLICY "Everyone can view active challenges"
+  ON public.challenges FOR SELECT
+  TO authenticated
+  USING (active = true);
+
+-- User challenges RLS policies
+CREATE POLICY "Users can view own challenges"
+  ON public.user_challenges FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage own challenges"
+  ON public.user_challenges FOR ALL
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- User roles RLS policies
+CREATE POLICY "Users can view own roles"
+  ON public.user_roles FOR SELECT
+  TO authenticated
+  USING (auth.uid() = user_id);
+
+-- Create function to handle new user signup
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.profiles (user_id, full_name)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', NEW.email)
+  );
+  
+  INSERT INTO public.user_roles (user_id, role)
+  VALUES (NEW.id, 'user');
+  
+  RETURN NEW;
+END;
+$$;
+
+-- Create trigger for new user signup
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.handle_new_user();
+
+-- Create function to update updated_at
+CREATE OR REPLACE FUNCTION public.update_updated_at()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$;
+
+-- Add trigger to profiles
+CREATE TRIGGER update_profiles_updated_at
+  BEFORE UPDATE ON public.profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION public.update_updated_at();
+
+-- Insert sample vocabulary challenges
+INSERT INTO public.vocabulary_challenges (word, definition, synonyms, example, difficulty, category) VALUES
+('Consequently', 'As a result; therefore', ARRAY['Therefore', 'Thus', 'Hence'], 'The weather was bad; consequently, the flight was delayed.', 'medium', 'linking'),
+('Nevertheless', 'In spite of that; however', ARRAY['However', 'Nonetheless', 'Yet'], 'It was raining. Nevertheless, we went for a walk.', 'medium', 'linking'),
+('Furthermore', 'In addition; moreover', ARRAY['Moreover', 'Additionally', 'Besides'], 'The hotel was clean. Furthermore, it was affordable.', 'easy', 'linking'),
+('Substantial', 'Of considerable importance, size, or worth', ARRAY['Significant', 'Considerable', 'Major'], 'There has been a substantial increase in sales.', 'hard', 'academic'),
+('Inevitable', 'Certain to happen; unavoidable', ARRAY['Unavoidable', 'Certain', 'Inescapable'], 'Change is inevitable in modern society.', 'hard', 'academic'),
+('Advocate', 'A person who publicly supports or recommends', ARRAY['Support', 'Promote', 'Champion'], 'She is a strong advocate for environmental protection.', 'medium', 'academic'),
+('Comprehensive', 'Complete; including all elements', ARRAY['Complete', 'Thorough', 'Extensive'], 'The report provides a comprehensive analysis.', 'medium', 'academic'),
+('Enhance', 'Intensify, increase, or improve', ARRAY['Improve', 'Boost', 'Strengthen'], 'Technology can enhance learning experiences.', 'easy', 'academic'),
+('Mitigate', 'Make less severe or serious', ARRAY['Alleviate', 'Reduce', 'Lessen'], 'Measures to mitigate climate change.', 'hard', 'academic'),
+('Paradigm', 'A typical example or pattern', ARRAY['Model', 'Pattern', 'Example'], 'A new paradigm in education.', 'hard', 'academic');
+
+-- Insert sample challenges
+INSERT INTO public.challenges (title, description, xp_reward, challenge_type, requirements) VALUES
+('First Steps', 'Complete your first writing task', 50, 'achievement', '{"essays_count": 1}'),
+('Vocabulary Master', 'Use 5 academic words in one essay', 100, 'daily', '{"vocabulary_used": 5}'),
+('Speaking Practice', 'Complete 3 speaking sessions', 150, 'weekly', '{"speaking_sessions": 3}'),
+('Band 7+ Writer', 'Achieve Band 7 or higher in writing', 200, 'achievement', '{"min_score": 7.0}'),
+('Daily Dedication', 'Practice for 7 consecutive days', 300, 'achievement', '{"consecutive_days": 7}');
